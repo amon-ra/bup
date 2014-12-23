@@ -1,3 +1,10 @@
+This branchs try to implement a fast rpc server/client using:
+ - https://github.com/amon-ra/pizco
+ - http://augustl.com/blog/2013/zeromq_instead_of_http/
+
+The idea Is that there will be a Server Worker that will execute functions from clients.
+
+
 bup: It backs things up
 =======================
 
