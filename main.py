@@ -74,7 +74,7 @@ if len(argv) < 2:
 try:
     optspec = ['help', 'version', 'debug', 'profile', 'bup-dir=']
     global_args, subcmd = getopt.getopt(argv[1:], '?VDd:', optspec)
-except getopt.GetoptError, ex:
+except getopt.GetoptError as ex:
     usage('error: %s' % ex.msg)
 
 help_requested = None
