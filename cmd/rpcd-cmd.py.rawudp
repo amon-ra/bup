@@ -4,7 +4,6 @@ from bup import options,path,git
 from bup.helpers import *
 import time
 import logging
-import collections
 
 import udt
 import gevent
@@ -60,9 +59,6 @@ class RpcServerUdt(object):
         for method in dir(obj):
             if not method.startswith('_'):
                 methods[method] = getattr(obj, method)
-        for method in dir(self):
-            if not method.startswith('_'):
-                methods[method] = getattr(self, method)
 
         return methods
 
@@ -88,29 +84,12 @@ class RpcServerUdt(object):
     def _recv(self):
         return msgpack.unpackb(self.socket.recv())
 
-    def _send(self, msg, req, pid, sec, enc=0):
-        #calcular el crc
-        size = len(msg)
-        #H1 Cabecera (No encriptada): Identificacion del client,secuencia,Encriptacion (ninguna,cabeceras,cabeceras + datos, tamaño h2, tamaño total,crc)
-        header=cbor.dumps(struct.pack("!IIHIII",pid,sec,self.version,enc,size,crc))
-        self.clients[req].send(header,0) 
-        self.clients[req].send(msg,0) 
+    def _send(self, msg):
+        self.socket.send(msgpack.packb(msg))
 
-    def _stream(self,req,pid,sec,gen_pid,packetsize,size,enc=0):
-        try:
-            msg=self.gens[gen_pid].next()
-            size=len(msg)
-        except:
-            #Last packet
-            size=0
-        h2=cbor.dumps([size,size,"RAW",gen_pid])
-        self._send(h2,req, pid, sec ,enc)
-        if size > 0:
-            self.clients[req].send(msg) 
-
-    #close socket if size is 0
-    def _istop(self,h2size=0):
-        if h2size = 0:
+    #close socket if method does not exists
+    def _istop(self,method=None):
+        if method not in self.methods:
             self.clients[i].send("OK", 0)
             self.clients[i].close()
             self.epoll.remove_usock(i)
@@ -118,76 +97,26 @@ class RpcServerUdt(object):
             return True
         return False
 
-    def _getData(self,req,size,bufsize=8096):
-        i=bufsize
-        while i <= size:
-            yield self.clients[req].recv(bufsize,0)
-            i+=bufsize
-        rest = size % bufsize
-        if rest > 0: 
-            yield self.clients[req].recv(rest,0)
-
-    def _route (self):
-        return cbor.dumps([0,0,"ROUTE","NEW ip:port"])
-
-    def _response(self,method,args):
-        if method = "STREAM":
-            self._stream(req,pid,sec,packetsize,size)
-            return True
-        return False
-
-    def _process2(self,req,h2size,crcr,enc=False):
+    def _process2(self,req,h2size,size,method):
         try:
-            packetsize,size,method,args = cbor.loads(self.clients[req].recv(h2size,0))
+            args = cbor.loads(self.clients[req].recv(h2size,0))
         except:
-            #must send the error
             return
-        #test crc
-        #generate an iterator for the data
-        if self._response():
-            return
-        if packetsize > 0: 
-            data = self._getData(req,size,packetsize)
-        args.append(data)
-        try:
-            rtn = self.methods[method](*args)
-        except:
-            #si se provoca una route exception devolvemos ROUTE
-            rtn=self._route()
-        if isinstance(rtn, collections.Iterable) and (not isinstance(rtn, collections.Sized)):
-            #is an generator
-            gen_pid=urandom(24)
-            while gen_pid in self.gens:
-                gen_pid=urandom(24)
-            self.gens[gen_pid]=rtn
-            rtn=cbor.dumps([0,0,"STREAM",gen_pid])
-        else:
-            rtn=cbor.dumps([0,0,"RET",rtn])
+        data = self.clients[req].recv(size,0)
+        
 
-        self._send(rtn,req,pid,sec)
-        #Send the data ruturns
-
-    #Recivimos los parametros del packete de cabecera: Tamaño de buffer. Tamaño de la cabezera del paquete
-    #El formato de la cabezera sera: tamaño(1),sha(20),crc(8)
-    #en esta primera version no se utiliza un buffer sino que se lee el fich completo
-    #H1 Cabecera (No encriptada): Identificacion del client,secuencia,Encriptacion (ninguna,cabeceras,cabeceras + datos, tamaño h2, tamaño total,crc)
-    #H2 (puede ir encriptada) :  tamaño de buffer, tamaño de data , methodo, argumentos 
-    #El crc es calculado uniendo H1 y H2
     def _process(self, req):
         # header, method, args = req
         # rtn = self.methods[method](*args)
         # h = {'response_to': 0, 'message_id':0, 'v': 3}
         # return (h, 'OK', [rtn])
         try:
-            pid,sec,version,enc,h2size,crcr = cbor.loads(self.clients[req].recv(PACKETSIZE,0))
-            #Finalizamos si el tamaño es excesivo (para evitar ataques)
-            if h2size > MAX_PACKETSIZE:
-                h2size =0
-            if self._istop(h2size):
+            method,h2size,crcr = cbor.loads(self.clients[req].recv(PACKETSIZE,0))
+            if self._istop(method):
                 return None
         except:
             return self._istop()
-        return gevent.spawn(self._process2,req,h2size,crcr,enc)
+        return gevent.spawn(self._process2,req,h2size,method)
         # text = self.clients[i].recv(1024, 0)
         # print text
 
@@ -228,82 +157,21 @@ class RpcServerUdt(object):
 
 class RpcClientUdt(object):
 
-    def __init__(self,enc=0,version=0,sec=0):
-        self.socket = udt.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
-        self.slist = {}
-        self.gen = None
-        self.pid = 0
-        self.sec = sec
-        self.enc = enc
-        self.version = version
+    def __init__(self):
+        self.ctx = zmq.Context()
+        self.socket = self.ctx.socket(zmq.REQ)
 
     def __call__(self, method, *args):
-        self._send(method, args)
+        self._send(method, *args)
         h, status, rtn = self._recv()
         return rtn[0]
 
+    def _send(self, method, *args):
+        header = {'message_id': 0, 'v': 3}
+        self.socket.send(msgpack.packb((header, method, args)))
 
-    def _sendmore(self,socket,size,msg):
-        #packetsize,size,method,args = self._sockrecv(socket)
-        if size = 0:
-            try:
-                while True:
-                    socket.send(msg.next(),0)
-            except StopIteration:
-                pass
-        else:
-            i=self.packetsize
-            while i <= size:
-                socket.send(msg,self.packetsize)
-                i+=self.packetsize
-            rest = size % self.packetsize
-            if rest > 0: 
-                socket.send(msg,self.packetsize)
-            
-
-    def _send(self, method,args, msg=None):
-        size=0
-        psize=0
-        try:
-            socket=self.slist[method]
-        except:
-            socket=self.socket        
-        if isinstance(msg, collections.Iterable) and (not isinstance(msg,collections.Sized)):
-            psize = self.packetsize
-        elif msg:
-            size = len(msg)
-            psize = self.packetsize
-        h2=cbor.dumps([psize,size,method,args])
-        #calcular el crc
-        crc=0
-        size = len(h2)
-        #H1 Cabecera (No encriptada): Identificacion del client,secuencia,Encriptacion (ninguna,cabeceras,cabeceras + datos, tamaño h2, tamaño total,crc)
-        header=cbor.dumps(struct.pack("!IIHIII",self.pid,self.sec,self.version,self.enc,size,crc))
-        socket.send(header,0) 
-        socket.send(h2,0) 
-        if psize>0:
-            self._sendmore(socket,size,msg)
-
-    def _sockrecv(self,socket):
-        try:
-            pid,sec,version,enc,h2size,crcr = cbor.loads(socket.recv(PACKETSIZE,0))
-            #Finalizamos si el tamaño es excesivo (para evitar ataques)
-            if h2size > MAX_PACKETSIZE:
-                h2size =0
-            if self._istop(h2size):
-                return None
-            packetsize,size,method,args = cbor.loads(socket.recv(h2size,0))
-
-        except:
-            return self._istop()
-        return packetsize,size,method,args 
-
-    def _recv(self,method=None):
-        try:
-            socket=self.slist[method]
-        except:
-            socket=self.socket
-        packetsize,size,method,args = self._sockrecv(socket)
+    def _recv(self):
+        return msgpack.unpackb(self.socket.recv())
 
     def connect(self, *args):
         self.socket.connect(*args)

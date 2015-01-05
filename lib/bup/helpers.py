@@ -4,7 +4,7 @@ from ctypes import sizeof, c_void_p
 from os import environ
 from contextlib import contextmanager
 import sys, os, pwd, subprocess, errno, socket, select, mmap, stat, re, struct
-import hashlib, heapq, operator, time, grp, tempfile
+import hmac,hashlib, heapq, operator, time, grp, tempfile
 
 from bup import _helpers
 import bup._helpers as _helpers
@@ -14,6 +14,13 @@ import math
 # want options.py to be standalone so people can include it in other projects.
 from bup.options import _tty_width
 tty_width = _tty_width
+
+def generate_key ():
+    return os.urandom(24).encode('hex')
+
+def make_digest(key,message):
+    "Return a digest for the message."
+    return hmac.new(key, message, hashlib.sha1).digest()
 
 
 def atoi(s):
@@ -986,3 +993,6 @@ def grafted_path_components(graft_points, path):
     return path_components(clean_path)
 
 Sha1 = hashlib.sha1
+
+
+

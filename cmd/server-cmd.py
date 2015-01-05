@@ -112,7 +112,7 @@ def receive_objects_v2(conn, junk):
                 if not (name in suggested):
                     debug1("bup server: suggesting index %s\n"
                            % git.shorten_hash(name))
-                    debug1("bup server:   because of object %s\n"
+                    debug1("bup server: because of object %s\n"
                            % shar.encode('hex'))
                     conn.write('index %s\n' % name)
                     suggested.add(name)
